@@ -1,0 +1,37 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.1
+openai==1.59.5
+qdrant-client==1.12.1
+rank-bm25==0.2.2
+aiosqlite==0.20.0
+aiomysql>=0.2.0
+python-dotenv==1.0.1
+jieba==0.42.1
+numpy==1.26.4
+python-multipart==0.0.20
+PyMuPDF==1.24.14
+pdfplumber==0.11.4
+rich==13.9.4
+beautifulsoup4==4.12.3
+Pillow>=10.0.0
+pytest-asyncio>=0.23.0
+
+# ── 本地嵌入模型（sentence-transformers，EMBEDDING_MODE=local 默认启用）──
+# 默认安装 CPU 版 torch（约 200MB）。
+# 若有 NVIDIA GPU，安装完后执行：
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+# 更多版本见 https://pytorch.org/get-started/locally/
+torch>=2.1.0
+sentence-transformers>=2.7.0
+
+# ── 内嵌 LLM 推理（llama-cpp-python，LLM_MODE=embedded 默认启用）────────
+# CPU 版：
+#   pip install llama-cpp-python
+#
+# NVIDIA GPU 版（推荐，需先确认已安装 CUDA 12.x）：
+#   CMAKE_ARGS="-DLLAMA_CUDA=on" pip install llama-cpp-python --force-reinstall
+#
+# 注意：llama-cpp-python 不在此处列出以避免 CPU/GPU 版本冲突。
+# 请根据硬件手动安装上方对应命令。

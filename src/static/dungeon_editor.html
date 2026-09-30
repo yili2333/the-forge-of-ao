@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>地牢编辑器</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #1a1a2e; color: #ccc; font-family: monospace; display: flex; height: 100vh; overflow: hidden; }
+
+/* ── 左侧工具栏 ── */
+#sidebar {
+  width: 210px; flex-shrink: 0;
+  background: #16213e; padding: 12px;
+  display: flex; flex-direction: column; gap: 10px;
+  border-right: 1px solid #333; overflow-y: auto;
+}
+#sidebar h2 { font-size: 14px; color: #e94560; margin-bottom: 4px; }
+.section-title { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 1px; margin-top: 6px; }
+
+.tool-btn {
+  background: #0f3460; border: 1px solid #333; color: #ccc;
+  padding: 6px 8px; cursor: pointer; border-radius: 4px; font-size: 12px;
+  text-align: left; width: 100%;
+}
+.tool-btn:hover { background: #1a4a80; }
+.tool-btn.active { background: #e94560; color: #fff; border-color: #e94560; }
+
+.terrain-btn {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 6px; cursor: pointer; border-radius: 4px;
+  border: 2px solid transparent; font-size: 11px;
+}
+.terrain-btn:hover { border-color: #555; }
+.terrain-btn.active { border-color: #e94560; }
+.terrain-swatch { width: 16px; height: 16px; border-radius: 2px; flex-shrink: 0; }
+
+.gen-row { display: flex; flex-direction: column; gap: 3px; }
+.gen-row label { font-size: 11px; color: #888; }
+.gen-row input, .gen-row select {
+  background: #0f3460; border: 1px solid #333; color: #ccc;
+  padding: 4px 6px; border-radius: 3px; font-size: 12px; width: 100%;
+}
+
+.action-btn {
+  background: #0f3460; border: 1px solid #e94560; color: #e94560;
+  padding: 7px; cursor: pointer; border-radius: 4px; font-size: 12px;
+  width: 100%; margin-top: 2px;
+}
+.action-btn:hover { background: #e94560; color: #fff; }
+.action-btn.primary { background: #e94560; color: #fff; }
+.action-btn.primary:hover { background: #c73652; }
+
+/* 底图上传区 */
+#drop-zone {
+  border: 2px dashed #444; border-radius: 4px;
+  padding: 10px; text-align: center; font-size: 11px; color: #666;
+  cursor: pointer; transition: border-color 0.2s;
+}
+#drop-zone:hover, #drop-zone.dragover { border-color: #e94560; color: #ccc; }
+#drop-zone input { display: none; }
+
+.opacity-row { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #888; }
+.opacity-row input[type=range] { flex: 1; accent-color: #e94560; }
+
+#status { font-size: 11px; color: #666; min-height: 16px; }
+
+#canvas-wrap { flex: 1; overflow: auto; background: #111; display: flex; align-items: flex-start; justify-content: flex-start; }
+#grid-canvas { cursor: crosshair; display: block; }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <h2>🗺 地牢编辑器</h2>
+
+  <div class="section-title">工具</div>
+  <button class="tool-btn active" data-tool="pencil" title="P">✏️ 画笔 (P)</button>
+  <button class="tool-btn" data-tool="rect" title="R">▭ 矩形 (R)</button>
+  <button class="tool-btn" data-tool="fill" title="F">🪣 填充 (F)</button>
+  <button class="tool-btn" data-tool="erase" title="E">🧹 橡皮 (E)</button>
+
+  <div class="section-title">地形</div>
+  <div id="terrain-palette"></div>
+
+  <div class="section-title">底图导入</div>
+  <div id="drop-zone">
+    <input type="file" id="bg-file" accept="image/*">
+    点击或拖拽上传地图图片
+  </div>
+  <div class="opacity-row">
+    <span>不透明度</span>
+    <input type="range" id="bg-opacity" min="0" max="100" value="70">
+    <span id="opacity-label">70%</span>
+  </div>
+  <button class="action-btn" id="btn-remove-bg" style="display:none">🗑 移除底图</button>
+
+  <div class="section-title">程序生成</div>
+  <div class="gen-row">
+    <label>风格</label>
+    <select id="gen-style"><option value="dungeon">地牢（BSP）</option><option value="cave">洞穴（CA）</option></select>
+  </div>
+  <div class="gen-row">
+    <label>房间数</label>
+    <input id="gen-rooms" type="number" value="6" min="2" max="30">
+  </div>
+  <div class="gen-row">
+    <label>种子（空=随机）</label>
+    <input id="gen-seed" type="number" placeholder="随机">
+  </div>
+  <button class="action-btn" id="btn-generate">⚙️ 生成地形</button>
+
+  <div class="section-title">操作</div>
+  <button class="action-btn" id="btn-clear">🗑 清空地形</button>
+  <button class="action-btn primary" id="btn-save">💾 保存到服务器</button>
+
+  <div id="status">就绪</div>
+</div>
+
+<div id="canvas-wrap">
+  <canvas id="grid-canvas"></canvas>
+</div>
+
+<script>
+// ── 注入的 ID（服务器替换 __CAMPAIGN_ID__ / __MAP_ID__）──
+const CAMPAIGN_ID = "__CAMPAIGN_ID__";
+const MAP_ID      = "__MAP_ID__";
+const DEV_MODE = CAMPAIGN_ID === "__CAMPAIGN_ID__";
+const BASE = DEV_MODE ? "http://localhost:8000" : "";
+
+// ── 地形定义（含带底图时的半透明叠加色）──
+const TERRAINS = [
+  { id: "open",       label: "空地",   color: "#4a7c59", overlay: "rgba(74,124,89,0.20)"   },
+  { id: "wall",       label: "墙壁",   color: "#2a2a3e", overlay: "rgba(20,20,40,0.88)"    },
+  { id: "difficult",  label: "难行",   color: "#7a6a3a", overlay: "rgba(122,106,58,0.45)"  },
+  { id: "water",      label: "水域",   color: "#1e4a7a", overlay: "rgba(30,74,122,0.55)"   },
+  { id: "door",       label: "门",     color: "#8b6914", overlay: "rgba(139,105,20,0.65)"  },
+  { id: "cover_half", label: "半掩",   color: "#6a5a4a", overlay: "rgba(106,90,74,0.50)"   },
+  { id: "cover_full", label: "全掩",   color: "#4a3a2a", overlay: "rgba(74,58,42,0.72)"    },
+];
+
+const TERRAIN_COLOR   = {};
+const TERRAIN_OVERLAY = {};
+TERRAINS.forEach(t => {
+  TERRAIN_COLOR[t.id]   = t.color;
+  TERRAIN_OVERLAY[t.id] = t.overlay;
+});
+
+// ── 状态 ──
+let COLS = 20, ROWS = 20;
+let CELL = 28;
+let cells = [];
+let currentTerrain = "open";
+let currentTool = "pencil";
+let isPainting = false;
+let rectStart = null;
+let rectPreview = null;
+
+// 底图
+let bgImage = null;        // HTMLImageElement
+let bgOpacity = 0.70;      // 0–1
+
+// ── DOM ──
+const canvas    = document.getElementById("grid-canvas");
+const ctx       = canvas.getContext("2d");
+const statusEl  = document.getElementById("status");
+const opSlider  = document.getElementById("bg-opacity");
+const opLabel   = document.getElementById("opacity-label");
+const removeBgBtn = document.getElementById("btn-remove-bg");
+
+// ── 地形色板 ──
+const palette = document.getElementById("terrain-palette");
+TERRAINS.forEach(t => {
+  const btn = document.createElement("div");
+  btn.className = "terrain-btn" + (t.id === "open" ? " active" : "");
+  btn.dataset.terrain = t.id;
+  btn.innerHTML = `<span class="terrain-swatch" style="background:${t.color}"></span><span>${t.label}</span>`;
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".terrain-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    currentTerrain = t.id;
+    if (currentTool === "erase") selectTool("pencil");
+  });
+  palette.appendChild(btn);
+});
+
+// ── 工具选择 ──
+function selectTool(id) {
+  currentTool = id;
+  document.querySelectorAll(".tool-btn").forEach(b => b.classList.toggle("active", b.dataset.tool === id));
+}
+document.querySelectorAll(".tool-btn").forEach(b => b.addEventListener("click", () => selectTool(b.dataset.tool)));
+
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  const map = { p: "pencil", r: "rect", f: "fill", e: "erase" };
+  if (map[e.key.toLowerCase()]) selectTool(map[e.key.toLowerCase()]);
+});
+
+// ── 格子初始化 ──
+function makeCell(terrain = "open") {
+  return { terrain, elevation: 0, notes: "", is_visible: true };
+}
+function initCells(rows, cols, terrain = "open") {
+  cells = Array.from({ length: rows }, () =>
+    Array.from({ length: cols }, () => makeCell(terrain))
+  );
+}
+function resizeCanvas() {
+  canvas.width  = COLS * CELL;
+  canvas.height = ROWS * CELL;
+  drawAll();
+}
+
+// ── 绘制 ──
+function drawAll() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // 1. 底图（若有）
+  if (bgImage) {
+    ctx.globalAlpha = bgOpacity;
+    ctx.drawImage(bgImage, 0, 0, canvas.width, canvas.height);
+    ctx.globalAlpha = 1.0;
+  }
+
+  // 2. 地形叠加
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const terrain = cells[r]?.[c]?.terrain ?? "open";
+      // 有底图时使用半透明叠加色，无底图时用不透明原色
+      ctx.fillStyle = bgImage
+        ? (TERRAIN_OVERLAY[terrain] || "rgba(80,80,80,0.4)")
+        : (TERRAIN_COLOR[terrain]   || "#333");
+      ctx.fillRect(c * CELL, r * CELL, CELL, CELL);
+    }
+  }
+
+  // 3. 网格线
+  ctx.strokeStyle = bgImage ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.4)";
+  ctx.lineWidth = 0.5;
+  for (let r = 0; r <= ROWS; r++) {
+    ctx.beginPath(); ctx.moveTo(0, r * CELL); ctx.lineTo(COLS * CELL, r * CELL); ctx.stroke();
+  }
+  for (let c = 0; c <= COLS; c++) {
+    ctx.beginPath(); ctx.moveTo(c * CELL, 0); ctx.lineTo(c * CELL, ROWS * CELL); ctx.stroke();
+  }
+
+  // 4. 矩形预览
+  if (rectPreview) {
+    const { r1, c1, r2, c2 } = normalizeRect(rectPreview.r1, rectPreview.c1, rectPreview.r2, rectPreview.c2);
+    ctx.strokeStyle = "#e94560";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(c1 * CELL, r1 * CELL, (c2 - c1 + 1) * CELL, (r2 - r1 + 1) * CELL);
+  }
+}
+
+// ── 底图控制 ──
+function loadBgFromUrl(url) {
+  const img = new Image();
+  img.onload = () => { bgImage = img; removeBgBtn.style.display = ""; drawAll(); };
+  img.onerror = () => setStatus("底图加载失败", true);
+  img.src = url;
+}
+
+opSlider.addEventListener("input", () => {
+  bgOpacity = parseInt(opSlider.value) / 100;
+  opLabel.textContent = opSlider.value + "%";
+  drawAll();
+});
+
+removeBgBtn.addEventListener("click", () => {
+  bgImage = null;
+  removeBgBtn.style.display = "none";
+  drawAll();
+  setStatus("底图已移除（地形数据保留）");
+});
+
+// ── 底图上传（拖拽 + 点击）──
+const dropZone = document.getElementById("drop-zone");
+const bgFileInput = document.getElementById("bg-file");
+
+dropZone.addEventListener("click", () => bgFileInput.click());
+dropZone.addEventListener("dragover", e => { e.preventDefault(); dropZone.classList.add("dragover"); });
+dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragover"));
+dropZone.addEventListener("drop", e => {
+  e.preventDefault();
+  dropZone.classList.remove("dragover");
+  const file = e.dataTransfer.files[0];
+  if (file && file.type.startsWith("image/")) uploadBg(file);
+});
+bgFileInput.addEventListener("change", () => {
+  if (bgFileInput.files[0]) uploadBg(bgFileInput.files[0]);
+});
+
+async function uploadBg(file) {
+  // 本地预览（无论是否 DEV_MODE 都显示）
+  const localUrl = URL.createObjectURL(file);
+  loadBgFromUrl(localUrl);
+
+  if (DEV_MODE) {
+    setStatus("DEV 模式：底图仅本地预览，未上传服务器");
+    return;
+  }
+  try {
+    setStatus("上传底图中…");
+    const form = new FormData();
+    form.append("file", file);
+    const res = await fetch(
+      `${BASE}/api/import/map-bg/${CAMPAIGN_ID}/${MAP_ID}`,
+      { method: "POST", headers: { "X-Role": "dm" }, body: form }
+    );
+    if (!res.ok) throw new Error(await res.text());
+    setStatus("✅ 底图已上传保存");
+  } catch (err) {
+    setStatus("底图上传失败: " + err.message, true);
+  }
+}
+
+// ── 格子编辑 ──
+function cellAt(e) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    c: Math.floor((e.clientX - rect.left) / CELL),
+    r: Math.floor((e.clientY - rect.top)  / CELL),
+  };
+}
+function inBounds(r, c) { return r >= 0 && r < ROWS && c >= 0 && c < COLS; }
+
+function paint(r, c) {
+  if (!inBounds(r, c)) return;
+  cells[r][c].terrain = currentTool === "erase" ? "open" : currentTerrain;
+}
+
+function normalizeRect(r1, c1, r2, c2) {
+  return { r1: Math.min(r1,r2), c1: Math.min(c1,c2), r2: Math.max(r1,r2), c2: Math.max(c1,c2) };
+}
+
+function fillRect(r1, c1, r2, c2, terrain) {
+  const n = normalizeRect(r1, c1, r2, c2);
+  for (let r = n.r1; r <= n.r2; r++)
+    for (let c = n.c1; c <= n.c2; c++)
+      if (inBounds(r, c)) cells[r][c].terrain = terrain;
+}
+
+function floodFill(startR, startC, newTerrain) {
+  const oldTerrain = cells[startR][startC].terrain;
+  if (oldTerrain === newTerrain) return;
+  const queue = [[startR, startC]];
+  const visited = new Set([`${startR},${startC}`]);
+  while (queue.length) {
+    const [r, c] = queue.shift();
+    cells[r][c].terrain = newTerrain;
+    for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+      const nr = r+dr, nc = c+dc;
+      const key = `${nr},${nc}`;
+      if (inBounds(nr,nc) && !visited.has(key) && cells[nr][nc].terrain === oldTerrain) {
+        visited.add(key); queue.push([nr,nc]);
+      }
+    }
+  }
+}
+
+canvas.addEventListener("mousedown", e => {
+  const { r, c } = cellAt(e);
+  if (!inBounds(r, c)) return;
+  isPainting = true;
+  if (currentTool === "rect") {
+    rectStart = { r, c }; rectPreview = { r1:r, c1:c, r2:r, c2:c };
+  } else if (currentTool === "fill") {
+    floodFill(r, c, currentTerrain); drawAll();
+  } else {
+    paint(r, c); drawAll();
+  }
+});
+canvas.addEventListener("mousemove", e => {
+  if (!isPainting) return;
+  const { r, c } = cellAt(e);
+  if (!inBounds(r, c)) return;
+  if (currentTool === "rect" && rectStart) {
+    rectPreview = { r1:rectStart.r, c1:rectStart.c, r2:r, c2:c }; drawAll();
+  } else if (currentTool === "pencil" || currentTool === "erase") {
+    paint(r, c); drawAll();
+  }
+});
+canvas.addEventListener("mouseup", e => {
+  if (!isPainting) return;
+  isPainting = false;
+  if (currentTool === "rect" && rectStart) {
+    const { r, c } = cellAt(e);
+    fillRect(rectStart.r, rectStart.c, r, c, currentTool === "erase" ? "open" : currentTerrain);
+    rectStart = null; rectPreview = null; drawAll();
+  }
+});
+canvas.addEventListener("mouseleave", () => {
+  isPainting = false; rectStart = null; rectPreview = null; drawAll();
+});
+
+// ── 服务器通信 ──
+function setStatus(msg, isError = false) {
+  statusEl.textContent = msg;
+  statusEl.style.color = isError ? "#e94560" : "#888";
+}
+
+async function loadMap() {
+  if (DEV_MODE) {
+    setStatus("DEV 模式，使用空白地图");
+    initCells(ROWS, COLS, "open");
+    resizeCanvas();
+    return;
+  }
+  try {
+    setStatus("加载中…");
+    const res = await fetch(`${BASE}/api/campaign/${CAMPAIGN_ID}/encounter-maps/${MAP_ID}`);
+    if (!res.ok) throw new Error(res.statusText);
+    const data = await res.json();
+    COLS = data.grid_cols;
+    ROWS = data.grid_rows;
+    if (data.cells && data.cells.length > 0) {
+      cells = data.cells;
+    } else {
+      initCells(ROWS, COLS, "open");
+    }
+    // 加载已保存的底图
+    if (data.image_url) {
+      loadBgFromUrl(BASE + "/" + data.image_url.replace(/^\/+/, ""));
+    }
+    resizeCanvas();
+    setStatus(`已加载 ${COLS}×${ROWS} 地图${data.image_url ? "（含底图）" : ""}`);
+  } catch (err) {
+    setStatus("加载失败: " + err.message, true);
+    initCells(ROWS, COLS, "open");
+    resizeCanvas();
+  }
+}
+
+document.getElementById("btn-generate").addEventListener("click", async () => {
+  const style  = document.getElementById("gen-style").value;
+  const rooms  = parseInt(document.getElementById("gen-rooms").value) || 6;
+  const seedVal = document.getElementById("gen-seed").value;
+  const body = { style, room_count: rooms };
+  if (seedVal !== "") body.seed = parseInt(seedVal);
+  if (DEV_MODE) { setStatus("DEV 模式：请在服务器运行时使用"); return; }
+  try {
+    setStatus("生成中…");
+    const res = await fetch(
+      `${BASE}/api/campaign/${CAMPAIGN_ID}/encounter-maps/${MAP_ID}/generate-floor`,
+      { method: "POST", headers: { "Content-Type": "application/json", "X-Role": "dm" }, body: JSON.stringify(body) }
+    );
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    cells = data.cells; COLS = data.grid_cols; ROWS = data.grid_rows;
+    document.getElementById("gen-seed").value = data.seed_used;
+    resizeCanvas();
+    setStatus(`✅ 已生成（种子: ${data.seed_used}）`);
+  } catch (err) { setStatus("生成失败: " + err.message, true); }
+});
+
+document.getElementById("btn-clear").addEventListener("click", () => {
+  initCells(ROWS, COLS, "open");
+  drawAll();
+  setStatus("地形已清空（底图保留）");
+});
+
+document.getElementById("btn-save").addEventListener("click", async () => {
+  if (DEV_MODE) { setStatus("DEV 模式：无法保存"); return; }
+  try {
+    setStatus("保存中…");
+    const getRes = await fetch(`${BASE}/api/campaign/${CAMPAIGN_ID}/encounter-maps/${MAP_ID}`);
+    if (!getRes.ok) throw new Error(getRes.statusText);
+    const mapData = await getRes.json();
+    mapData.cells = cells;
+    const putRes = await fetch(
+      `${BASE}/api/campaign/${CAMPAIGN_ID}/encounter-maps/${MAP_ID}`,
+      { method: "PUT", headers: { "Content-Type": "application/json", "X-Role": "dm" }, body: JSON.stringify(mapData) }
+    );
+    if (!putRes.ok) throw new Error(await putRes.text());
+    setStatus("✅ 已保存");
+  } catch (err) { setStatus("保存失败: " + err.message, true); }
+});
+
+// ── 启动 ──
+loadMap();
+</script>
+</body>
+</html>

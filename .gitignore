@@ -1,0 +1,13 @@
+.idea/
+.vscode/
+__pycache__/
+*.pyc
+.venv/
+models/
+.embedding_cache/
+DND5e_chm-main/
+.claude/
+.env
+*.db
+src/data/
+.qoder/
